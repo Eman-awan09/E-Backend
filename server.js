@@ -60,7 +60,7 @@ app.get('/api/health', (req, res) => {
 module.exports = app;
 
 // Also start server when run directly (Render / local)
-if (require.main === module) {
-  const PORT = process.env.PORT || 5000;
-  app.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));
-}
+// if (require.main === module) {
+//   const PORT = process.env.PORT || 5000;
+//   app.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));
+// }
