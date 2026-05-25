@@ -173,6 +173,15 @@ app.get('/api/health', (req, res) => res.json({
   time: new Date().toISOString(),
 }));
 
+app.get('/api/debug-key', (req, res) => {
+  const key = process.env.SETUP_KEY || '';
+  res.json({ 
+    length: key.length,
+    matches: key === 'naqeebawan302',
+    // don't expose the actual value in production
+  });
+});
+
 app.get('/', (req, res) => res.json({ message: 'Email Tools API v4' }));
 
 app.use((err, req, res, next) => {
