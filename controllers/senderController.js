@@ -908,12 +908,306 @@
 //   testSmtp, getDailyStats,
 // };
 
-const nodemailer  = require('nodemailer');
-const { v4: uuidv4 } = require('uuid');
-const connectDB   = require('../lib/connectDB');
-const Campaign    = require('../models/Campaign');
+// const nodemailer  = require('nodemailer');
+// const { v4: uuidv4 } = require('uuid');
+// const connectDB   = require('../lib/connectDB');
+// const Campaign    = require('../models/Campaign');
 
-// ─── Helpers ────────────────────────────────────────────────────────────────
+// // ─── Helpers ────────────────────────────────────────────────────────────────
+// const todayStr = () => new Date().toISOString().slice(0, 10);
+
+// const parseEmails = (raw) => {
+//   if (!raw || typeof raw !== 'string') return [];
+//   const found = raw.match(/[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g) || [];
+//   return [...new Set(found.map(e => e.toLowerCase().trim()))];
+// };
+
+// const buildTransporter = (cfg) =>
+//   nodemailer.createTransport({
+//     host: cfg.host,
+//     port: parseInt(cfg.port) || 587,
+//     secure: cfg.secure === true || String(cfg.port) === '465',
+//     auth: { user: cfg.user, pass: cfg.pass },
+//     tls: { rejectUnauthorized: false },
+//     connectionTimeout: 12000,
+//     greetingTimeout: 8000,
+//   });
+
+// const sanitize = (doc) => {
+//   const c = doc.toObject ? doc.toObject() : { ...doc };
+//   const sent = c.sent || 0, failed = c.failed || 0;
+//   return {
+//     id:              c.id,
+//     name:            c.name,
+//     subject:         c.subject,
+//     status:          c.status,
+//     totalRecipients: c.totalRecipients,
+//     dailyLimit:      c.dailyLimit,
+//     delayMs:         c.delayMs,
+//     sent, failed,
+//     pending:         c.pending || 0,
+//     currentIndex:    c.currentIndex || 0,
+//     createdAt:       c.createdAt,
+//     startedAt:       c.startedAt,
+//     completedAt:     c.completedAt,
+//     pauseReason:     c.pauseReason || null,
+//     errorMessage:    c.errorMessage || null,
+//     dailyStats:      c.dailyStats || [],
+//     recentLogs:      (c.logs || []).slice(-50),
+//     smtpHost:        c.smtpConfig?.host || '',
+//     smtpUser:        c.smtpConfig?.user ? c.smtpConfig.user.slice(0, 4) + '****' : '',
+//     successRate:     sent + failed > 0 ? Math.round((sent / (sent + failed)) * 100) : 0,
+//   };
+// };
+
+// // ─── Create Campaign ─────────────────────────────────────────────────────────
+// const createCampaign = async (req, res) => {
+//   try {
+//     await connectDB();
+//     const { name, subject, body, fromName, emailsRaw, dailyLimit, delayMs, smtpConfig } = req.body;
+
+//     if (!subject || !body || !emailsRaw)
+//       return res.status(400).json({ error: 'subject, body and emails are required.' });
+//     if (!smtpConfig?.host || !smtpConfig?.user || !smtpConfig?.pass)
+//       return res.status(400).json({ error: 'smtpConfig requires host, user and pass.' });
+
+//     const recipients = parseEmails(emailsRaw);
+//     if (!recipients.length)
+//       return res.status(400).json({ error: 'No valid email addresses found.' });
+
+//     const id = uuidv4();
+//     const doc = await Campaign.create({
+//       id, subject, body,
+//       name:            name || `Campaign ${id.slice(0, 6)}`,
+//       fromName:        fromName || smtpConfig.user,
+//       recipients,
+//       totalRecipients: recipients.length,
+//       dailyLimit:      Math.max(1, parseInt(dailyLimit) || 100),
+//       delayMs:         Math.max(100, parseInt(delayMs) || 1500),
+//       smtpConfig,
+//       status:          'pending',
+//       createdAt:       new Date().toISOString(),
+//       sent: 0, failed: 0, pending: recipients.length,
+//       logs: [], dailyStats: [], currentIndex: 0,
+//     });
+
+//     return res.json({ success: true, campaignId: id, campaign: sanitize(doc) });
+//   } catch (err) {
+//     console.error('[createCampaign]', err.message);
+//     return res.status(500).json({ error: err.message });
+//   }
+// };
+
+// // ─── Send One Email (called per-tick by the frontend loop) ──────────────────
+// // POST /api/sender/campaigns/:campaignId/send-next
+// // Returns: { done, status, email, result: 'sent'|'failed', campaign }
+// const sendNext = async (req, res) => {
+//   try {
+//     await connectDB();
+//     const campaign = await Campaign.findOne({ id: req.params.campaignId });
+//     if (!campaign) return res.status(404).json({ error: 'Campaign not found' });
+
+//     // Guard states
+//     if (campaign.status === 'completed')
+//       return res.json({ done: true, status: 'completed', campaign: sanitize(campaign) });
+//     if (campaign.status === 'paused')
+//       return res.json({ done: false, status: 'paused', campaign: sanitize(campaign) });
+//     if (campaign.status === 'failed')
+//       return res.json({ done: false, status: 'failed', campaign: sanitize(campaign) });
+
+//     // All sent?
+//     if (campaign.currentIndex >= campaign.recipients.length) {
+//       campaign.status = 'completed';
+//       campaign.completedAt = new Date().toISOString();
+//       campaign.pending = 0;
+//       await campaign.save();
+//       return res.json({ done: true, status: 'completed', campaign: sanitize(campaign) });
+//     }
+
+//     // Daily limit check
+//     const d = todayStr();
+//     const todayStat = campaign.dailyStats.find(s => s.date === d);
+//     const sentToday = todayStat ? todayStat.sent : 0;
+//     if (sentToday >= campaign.dailyLimit) {
+//       campaign.status = 'paused';
+//       campaign.pauseReason = `Daily limit of ${campaign.dailyLimit} reached. Resume tomorrow.`;
+//       await campaign.save();
+//       return res.json({ done: false, status: 'paused', pauseReason: campaign.pauseReason, campaign: sanitize(campaign) });
+//     }
+
+//     // Send the next email
+//     const email     = campaign.recipients[campaign.currentIndex];
+//     const timestamp = new Date().toISOString();
+//     const logEntry  = { email, timestamp, status: 'sent' };
+//     let result      = 'sent';
+
+//     try {
+//       const transporter = buildTransporter(campaign.smtpConfig);
+//       await transporter.sendMail({
+//         from:    `"${campaign.fromName}" <${campaign.smtpConfig.user}>`,
+//         to:      email,
+//         subject: campaign.subject,
+//         html:    campaign.body.replace(/\n/g, '<br>'),
+//         text:    campaign.body,
+//       });
+//       campaign.sent++;
+
+//       // Update daily stat
+//       if (todayStat) { todayStat.sent++; }
+//       else { campaign.dailyStats.push({ date: d, sent: 1, failed: 0 }); }
+
+//     } catch (err) {
+//       logEntry.status = 'failed';
+//       logEntry.error  = err.message;
+//       result          = 'failed';
+//       campaign.failed++;
+
+//       const ds = campaign.dailyStats.find(s => s.date === d);
+//       if (ds) { ds.failed++; }
+//       else { campaign.dailyStats.push({ date: d, sent: 0, failed: 1 }); }
+//     }
+
+//     campaign.pending    = Math.max(0, campaign.pending - 1);
+//     campaign.currentIndex++;
+//     campaign.logs.push(logEntry);
+//     if (campaign.logs.length > 200) campaign.logs.splice(0, campaign.logs.length - 200);
+
+//     // Mark completed if last email
+//     if (campaign.currentIndex >= campaign.recipients.length) {
+//       campaign.status = 'completed';
+//       campaign.completedAt = new Date().toISOString();
+//       campaign.pending = 0;
+//     }
+
+//     await campaign.save();
+
+//     return res.json({
+//       done:     campaign.status === 'completed',
+//       status:   campaign.status,
+//       email,
+//       result,
+//       logEntry,
+//       campaign: sanitize(campaign),
+//     });
+//   } catch (err) {
+//     console.error('[sendNext]', err.message);
+//     return res.status(500).json({ error: err.message });
+//   }
+// };
+
+// // ─── Start Campaign (sets status to running, frontend drives the loop) ───────
+// const startCampaign = async (req, res) => {
+//   try {
+//     await connectDB();
+//     const doc = await Campaign.findOne({ id: req.params.campaignId });
+//     if (!doc) return res.status(404).json({ error: 'Campaign not found' });
+//     if (doc.status === 'running')   return res.status(400).json({ error: 'Already running' });
+//     if (doc.status === 'completed') return res.status(400).json({ error: 'Already completed' });
+
+//     doc.status     = 'running';
+//     doc.startedAt  = doc.startedAt || new Date().toISOString();
+//     doc.pauseReason = null;
+//     await doc.save();
+
+//     return res.json({ success: true, message: 'Campaign started — frontend will drive sends', campaign: sanitize(doc) });
+//   } catch (err) {
+//     console.error('[startCampaign]', err.message);
+//     return res.status(500).json({ error: err.message });
+//   }
+// };
+
+// // ─── Pause ───────────────────────────────────────────────────────────────────
+// const pauseCampaign = async (req, res) => {
+//   try {
+//     await connectDB();
+//     const doc = await Campaign.findOne({ id: req.params.campaignId });
+//     if (!doc) return res.status(404).json({ error: 'Campaign not found' });
+//     if (doc.status !== 'running') return res.status(400).json({ error: 'Not running' });
+//     doc.status = 'paused';
+//     doc.pauseReason = 'Manually paused';
+//     await doc.save();
+//     return res.json({ success: true, campaign: sanitize(doc) });
+//   } catch (err) {
+//     return res.status(500).json({ error: err.message });
+//   }
+// };
+
+// // ─── Get One ─────────────────────────────────────────────────────────────────
+// const getCampaign = async (req, res) => {
+//   try {
+//     await connectDB();
+//     const doc = await Campaign.findOne({ id: req.params.campaignId });
+//     if (!doc) return res.status(404).json({ error: 'Campaign not found' });
+//     return res.json(sanitize(doc));
+//   } catch (err) {
+//     return res.status(500).json({ error: err.message });
+//   }
+// };
+
+// // ─── Get All ──────────────────────────────────────────────────────────────────
+// const getAllCampaigns = async (req, res) => {
+//   try {
+//     await connectDB();
+//     const docs = await Campaign.find({}).sort({ createdAt: -1 }).select('-logs -recipients');
+//     return res.json({ campaigns: docs.map(sanitize), total: docs.length });
+//   } catch (err) {
+//     return res.status(500).json({ error: err.message });
+//   }
+// };
+
+// // ─── Delete ───────────────────────────────────────────────────────────────────
+// const deleteCampaign = async (req, res) => {
+//   try {
+//     await connectDB();
+//     const r = await Campaign.deleteOne({ id: req.params.campaignId });
+//     if (!r.deletedCount) return res.status(404).json({ error: 'Campaign not found' });
+//     return res.json({ success: true });
+//   } catch (err) {
+//     return res.status(500).json({ error: err.message });
+//   }
+// };
+
+// // ─── Test SMTP ────────────────────────────────────────────────────────────────
+// const testSmtp = async (req, res) => {
+//   try {
+//     const { smtpConfig } = req.body;
+//     if (!smtpConfig?.host || !smtpConfig?.user || !smtpConfig?.pass)
+//       return res.status(400).json({ error: 'Provide host, user and pass' });
+//     const t = buildTransporter(smtpConfig);
+//     await t.verify();
+//     return res.json({ success: true, message: 'SMTP connection verified!' });
+//   } catch (err) {
+//     return res.status(400).json({ success: false, error: `SMTP Error: ${err.message}` });
+//   }
+// };
+
+// // ─── Daily Stats ──────────────────────────────────────────────────────────────
+// const getDailyStats = async (req, res) => {
+//   try {
+//     await connectDB();
+//     const doc = await Campaign.findOne({ id: req.params.campaignId }).select('dailyStats');
+//     if (!doc) return res.status(404).json({ error: 'Campaign not found' });
+//     const stats = [...(doc.dailyStats || [])].sort((a, b) => a.date.localeCompare(b.date));
+//     return res.json({ campaignId: req.params.campaignId, dailyStats: stats });
+//   } catch (err) {
+//     return res.status(500).json({ error: err.message });
+//   }
+// };
+
+// module.exports = {
+//   createCampaign, startCampaign, pauseCampaign,
+//   sendNext,
+//   getCampaign, getAllCampaigns, deleteCampaign,
+//   testSmtp, getDailyStats,
+// };
+
+
+const nodemailer = require('nodemailer');
+const { v4: uuidv4 } = require('uuid');
+const connectDB  = require('../lib/connectDB');
+const Campaign   = require('../models/Campaign');
+const User       = require('../models/User');
+
 const todayStr = () => new Date().toISOString().slice(0, 10);
 
 const parseEmails = (raw) => {
@@ -922,74 +1216,63 @@ const parseEmails = (raw) => {
   return [...new Set(found.map(e => e.toLowerCase().trim()))];
 };
 
-const buildTransporter = (cfg) =>
-  nodemailer.createTransport({
-    host: cfg.host,
-    port: parseInt(cfg.port) || 587,
-    secure: cfg.secure === true || String(cfg.port) === '465',
-    auth: { user: cfg.user, pass: cfg.pass },
-    tls: { rejectUnauthorized: false },
-    connectionTimeout: 12000,
-    greetingTimeout: 8000,
-  });
+const buildTransporter = (cfg) => nodemailer.createTransport({
+  host: cfg.host, port: parseInt(cfg.port) || 587,
+  secure: cfg.secure === true || String(cfg.port) === '465',
+  auth: { user: cfg.user, pass: cfg.pass },
+  tls: { rejectUnauthorized: false },
+  connectionTimeout: 12000, greetingTimeout: 8000,
+});
+
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 const sanitize = (doc) => {
   const c = doc.toObject ? doc.toObject() : { ...doc };
   const sent = c.sent || 0, failed = c.failed || 0;
   return {
-    id:              c.id,
-    name:            c.name,
-    subject:         c.subject,
-    status:          c.status,
-    totalRecipients: c.totalRecipients,
-    dailyLimit:      c.dailyLimit,
-    delayMs:         c.delayMs,
-    sent, failed,
-    pending:         c.pending || 0,
-    currentIndex:    c.currentIndex || 0,
-    createdAt:       c.createdAt,
-    startedAt:       c.startedAt,
-    completedAt:     c.completedAt,
-    pauseReason:     c.pauseReason || null,
-    errorMessage:    c.errorMessage || null,
-    dailyStats:      c.dailyStats || [],
-    recentLogs:      (c.logs || []).slice(-50),
-    smtpHost:        c.smtpConfig?.host || '',
-    smtpUser:        c.smtpConfig?.user ? c.smtpConfig.user.slice(0, 4) + '****' : '',
-    successRate:     sent + failed > 0 ? Math.round((sent / (sent + failed)) * 100) : 0,
+    id: c.id, name: c.name, subject: c.subject, status: c.status,
+    totalRecipients: c.totalRecipients, dailyLimit: c.dailyLimit, delayMs: c.delayMs,
+    sent, failed, pending: c.pending || 0, currentIndex: c.currentIndex || 0,
+    createdAt: c.createdAt, startedAt: c.startedAt, completedAt: c.completedAt,
+    pauseReason: c.pauseReason || null, errorMessage: c.errorMessage || null,
+    dailyStats: c.dailyStats || [], recentLogs: (c.logs || []).slice(-50),
+    smtpHost: c.smtpConfig?.host || '',
+    smtpUser: c.smtpConfig?.user ? c.smtpConfig.user.slice(0, 4) + '****' : '',
+    successRate: sent + failed > 0 ? Math.round((sent / (sent + failed)) * 100) : 0,
+    userId: c.userId,
   };
 };
 
-// ─── Create Campaign ─────────────────────────────────────────────────────────
+// ─── Create ──────────────────────────────────────────────────────────────────
 const createCampaign = async (req, res) => {
   try {
     await connectDB();
     const { name, subject, body, fromName, emailsRaw, dailyLimit, delayMs, smtpConfig } = req.body;
-
     if (!subject || !body || !emailsRaw)
       return res.status(400).json({ error: 'subject, body and emails are required.' });
     if (!smtpConfig?.host || !smtpConfig?.user || !smtpConfig?.pass)
       return res.status(400).json({ error: 'smtpConfig requires host, user and pass.' });
 
     const recipients = parseEmails(emailsRaw);
-    if (!recipients.length)
-      return res.status(400).json({ error: 'No valid email addresses found.' });
+    if (!recipients.length) return res.status(400).json({ error: 'No valid email addresses found.' });
 
     const id = uuidv4();
     const doc = await Campaign.create({
       id, subject, body,
+      userId:          req.user._id,   // ← scoped to logged-in user
       name:            name || `Campaign ${id.slice(0, 6)}`,
       fromName:        fromName || smtpConfig.user,
-      recipients,
-      totalRecipients: recipients.length,
-      dailyLimit:      Math.max(1, parseInt(dailyLimit) || 100),
-      delayMs:         Math.max(100, parseInt(delayMs) || 1500),
-      smtpConfig,
-      status:          'pending',
-      createdAt:       new Date().toISOString(),
+      recipients, totalRecipients: recipients.length,
+      dailyLimit: Math.max(1, parseInt(dailyLimit) || 100),
+      delayMs:    Math.max(100, parseInt(delayMs) || 1500),
+      smtpConfig, status: 'pending',
+      createdAt: new Date().toISOString(),
       sent: 0, failed: 0, pending: recipients.length,
       logs: [], dailyStats: [], currentIndex: 0,
     });
+
+    // Update user campaign count
+    await User.findByIdAndUpdate(req.user._id, { $inc: { totalCampaigns: 1 } });
 
     return res.json({ success: true, campaignId: id, campaign: sanitize(doc) });
   } catch (err) {
@@ -998,33 +1281,27 @@ const createCampaign = async (req, res) => {
   }
 };
 
-// ─── Send One Email (called per-tick by the frontend loop) ──────────────────
-// POST /api/sender/campaigns/:campaignId/send-next
-// Returns: { done, status, email, result: 'sent'|'failed', campaign }
+// ─── Send Next (one email per call — browser drives loop) ────────────────────
 const sendNext = async (req, res) => {
   try {
     await connectDB();
-    const campaign = await Campaign.findOne({ id: req.params.campaignId });
+    const filter = { id: req.params.campaignId };
+    // Non-admin can only access their own campaigns
+    if (req.user.role !== 'admin') filter.userId = req.user._id;
+
+    const campaign = await Campaign.findOne(filter);
     if (!campaign) return res.status(404).json({ error: 'Campaign not found' });
 
-    // Guard states
-    if (campaign.status === 'completed')
-      return res.json({ done: true, status: 'completed', campaign: sanitize(campaign) });
-    if (campaign.status === 'paused')
-      return res.json({ done: false, status: 'paused', campaign: sanitize(campaign) });
-    if (campaign.status === 'failed')
-      return res.json({ done: false, status: 'failed', campaign: sanitize(campaign) });
+    if (campaign.status === 'completed') return res.json({ done: true,  status: 'completed', campaign: sanitize(campaign) });
+    if (campaign.status === 'paused')    return res.json({ done: false, status: 'paused',    campaign: sanitize(campaign) });
+    if (campaign.status === 'failed')    return res.json({ done: false, status: 'failed',    campaign: sanitize(campaign) });
 
-    // All sent?
     if (campaign.currentIndex >= campaign.recipients.length) {
-      campaign.status = 'completed';
-      campaign.completedAt = new Date().toISOString();
-      campaign.pending = 0;
+      campaign.status = 'completed'; campaign.completedAt = new Date().toISOString(); campaign.pending = 0;
       await campaign.save();
       return res.json({ done: true, status: 'completed', campaign: sanitize(campaign) });
     }
 
-    // Daily limit check
     const d = todayStr();
     const todayStat = campaign.dailyStats.find(s => s.date === d);
     const sentToday = todayStat ? todayStat.sent : 0;
@@ -1035,7 +1312,6 @@ const sendNext = async (req, res) => {
       return res.json({ done: false, status: 'paused', pauseReason: campaign.pauseReason, campaign: sanitize(campaign) });
     }
 
-    // Send the next email
     const email     = campaign.recipients[campaign.currentIndex];
     const timestamp = new Date().toISOString();
     const logEntry  = { email, timestamp, status: 'sent' };
@@ -1044,127 +1320,105 @@ const sendNext = async (req, res) => {
     try {
       const transporter = buildTransporter(campaign.smtpConfig);
       await transporter.sendMail({
-        from:    `"${campaign.fromName}" <${campaign.smtpConfig.user}>`,
-        to:      email,
-        subject: campaign.subject,
-        html:    campaign.body.replace(/\n/g, '<br>'),
-        text:    campaign.body,
+        from: `"${campaign.fromName}" <${campaign.smtpConfig.user}>`,
+        to: email, subject: campaign.subject,
+        html: campaign.body.replace(/\n/g, '<br>'), text: campaign.body,
       });
       campaign.sent++;
-
-      // Update daily stat
-      if (todayStat) { todayStat.sent++; }
-      else { campaign.dailyStats.push({ date: d, sent: 1, failed: 0 }); }
-
-    } catch (err) {
-      logEntry.status = 'failed';
-      logEntry.error  = err.message;
-      result          = 'failed';
-      campaign.failed++;
-
       const ds = campaign.dailyStats.find(s => s.date === d);
-      if (ds) { ds.failed++; }
-      else { campaign.dailyStats.push({ date: d, sent: 0, failed: 1 }); }
+      if (ds) ds.sent++; else campaign.dailyStats.push({ date: d, sent: 1, failed: 0 });
+    } catch (err) {
+      logEntry.status = 'failed'; logEntry.error = err.message;
+      result = 'failed'; campaign.failed++;
+      const ds = campaign.dailyStats.find(s => s.date === d);
+      if (ds) ds.failed++; else campaign.dailyStats.push({ date: d, sent: 0, failed: 1 });
     }
 
-    campaign.pending    = Math.max(0, campaign.pending - 1);
+    campaign.pending = Math.max(0, campaign.pending - 1);
     campaign.currentIndex++;
     campaign.logs.push(logEntry);
     if (campaign.logs.length > 200) campaign.logs.splice(0, campaign.logs.length - 200);
-
-    // Mark completed if last email
     if (campaign.currentIndex >= campaign.recipients.length) {
-      campaign.status = 'completed';
-      campaign.completedAt = new Date().toISOString();
-      campaign.pending = 0;
+      campaign.status = 'completed'; campaign.completedAt = new Date().toISOString(); campaign.pending = 0;
     }
-
     await campaign.save();
 
-    return res.json({
-      done:     campaign.status === 'completed',
-      status:   campaign.status,
-      email,
-      result,
-      logEntry,
-      campaign: sanitize(campaign),
-    });
+    // Update user totals
+    const inc = result === 'sent' ? { totalSent: 1 } : { totalFailed: 1 };
+    await User.findByIdAndUpdate(campaign.userId, { $inc: inc });
+
+    return res.json({ done: campaign.status === 'completed', status: campaign.status, email, result, logEntry, campaign: sanitize(campaign) });
   } catch (err) {
     console.error('[sendNext]', err.message);
     return res.status(500).json({ error: err.message });
   }
 };
 
-// ─── Start Campaign (sets status to running, frontend drives the loop) ───────
+// ─── Start ───────────────────────────────────────────────────────────────────
 const startCampaign = async (req, res) => {
   try {
     await connectDB();
-    const doc = await Campaign.findOne({ id: req.params.campaignId });
+    const filter = { id: req.params.campaignId };
+    if (req.user.role !== 'admin') filter.userId = req.user._id;
+
+    const doc = await Campaign.findOne(filter);
     if (!doc) return res.status(404).json({ error: 'Campaign not found' });
     if (doc.status === 'running')   return res.status(400).json({ error: 'Already running' });
     if (doc.status === 'completed') return res.status(400).json({ error: 'Already completed' });
 
-    doc.status     = 'running';
-    doc.startedAt  = doc.startedAt || new Date().toISOString();
-    doc.pauseReason = null;
+    doc.status = 'running'; doc.startedAt = doc.startedAt || new Date().toISOString(); doc.pauseReason = null;
     await doc.save();
-
-    return res.json({ success: true, message: 'Campaign started — frontend will drive sends', campaign: sanitize(doc) });
-  } catch (err) {
-    console.error('[startCampaign]', err.message);
-    return res.status(500).json({ error: err.message });
-  }
+    return res.json({ success: true, campaign: sanitize(doc) });
+  } catch (err) { return res.status(500).json({ error: err.message }); }
 };
 
 // ─── Pause ───────────────────────────────────────────────────────────────────
 const pauseCampaign = async (req, res) => {
   try {
     await connectDB();
-    const doc = await Campaign.findOne({ id: req.params.campaignId });
+    const filter = { id: req.params.campaignId };
+    if (req.user.role !== 'admin') filter.userId = req.user._id;
+
+    const doc = await Campaign.findOne(filter);
     if (!doc) return res.status(404).json({ error: 'Campaign not found' });
-    if (doc.status !== 'running') return res.status(400).json({ error: 'Not running' });
-    doc.status = 'paused';
-    doc.pauseReason = 'Manually paused';
+    doc.status = 'paused'; doc.pauseReason = 'Manually paused';
     await doc.save();
     return res.json({ success: true, campaign: sanitize(doc) });
-  } catch (err) {
-    return res.status(500).json({ error: err.message });
-  }
+  } catch (err) { return res.status(500).json({ error: err.message }); }
+};
+
+// ─── Get All (scoped to user) ─────────────────────────────────────────────────
+const getAllCampaigns = async (req, res) => {
+  try {
+    await connectDB();
+    const filter = req.user.role === 'admin' ? {} : { userId: req.user._id };
+    const docs = await Campaign.find(filter).sort({ createdAt: -1 }).select('-logs -recipients');
+    return res.json({ campaigns: docs.map(sanitize), total: docs.length });
+  } catch (err) { return res.status(500).json({ error: err.message }); }
 };
 
 // ─── Get One ─────────────────────────────────────────────────────────────────
 const getCampaign = async (req, res) => {
   try {
     await connectDB();
-    const doc = await Campaign.findOne({ id: req.params.campaignId });
+    const filter = { id: req.params.campaignId };
+    if (req.user.role !== 'admin') filter.userId = req.user._id;
+    const doc = await Campaign.findOne(filter);
     if (!doc) return res.status(404).json({ error: 'Campaign not found' });
     return res.json(sanitize(doc));
-  } catch (err) {
-    return res.status(500).json({ error: err.message });
-  }
+  } catch (err) { return res.status(500).json({ error: err.message }); }
 };
 
-// ─── Get All ──────────────────────────────────────────────────────────────────
-const getAllCampaigns = async (req, res) => {
-  try {
-    await connectDB();
-    const docs = await Campaign.find({}).sort({ createdAt: -1 }).select('-logs -recipients');
-    return res.json({ campaigns: docs.map(sanitize), total: docs.length });
-  } catch (err) {
-    return res.status(500).json({ error: err.message });
-  }
-};
-
-// ─── Delete ───────────────────────────────────────────────────────────────────
+// ─── Delete ──────────────────────────────────────────────────────────────────
 const deleteCampaign = async (req, res) => {
   try {
     await connectDB();
-    const r = await Campaign.deleteOne({ id: req.params.campaignId });
+    const filter = { id: req.params.campaignId };
+    if (req.user.role !== 'admin') filter.userId = req.user._id;
+    const r = await Campaign.deleteOne(filter);
     if (!r.deletedCount) return res.status(404).json({ error: 'Campaign not found' });
     return res.json({ success: true });
-  } catch (err) {
-    return res.status(500).json({ error: err.message });
-  }
+  } catch (err) { return res.status(500).json({ error: err.message }); }
 };
 
 // ─── Test SMTP ────────────────────────────────────────────────────────────────
@@ -1173,30 +1427,22 @@ const testSmtp = async (req, res) => {
     const { smtpConfig } = req.body;
     if (!smtpConfig?.host || !smtpConfig?.user || !smtpConfig?.pass)
       return res.status(400).json({ error: 'Provide host, user and pass' });
-    const t = buildTransporter(smtpConfig);
-    await t.verify();
+    await buildTransporter(smtpConfig).verify();
     return res.json({ success: true, message: 'SMTP connection verified!' });
-  } catch (err) {
-    return res.status(400).json({ success: false, error: `SMTP Error: ${err.message}` });
-  }
+  } catch (err) { return res.status(400).json({ success: false, error: `SMTP Error: ${err.message}` }); }
 };
 
 // ─── Daily Stats ──────────────────────────────────────────────────────────────
 const getDailyStats = async (req, res) => {
   try {
     await connectDB();
-    const doc = await Campaign.findOne({ id: req.params.campaignId }).select('dailyStats');
+    const filter = { id: req.params.campaignId };
+    if (req.user.role !== 'admin') filter.userId = req.user._id;
+    const doc = await Campaign.findOne(filter).select('dailyStats');
     if (!doc) return res.status(404).json({ error: 'Campaign not found' });
     const stats = [...(doc.dailyStats || [])].sort((a, b) => a.date.localeCompare(b.date));
     return res.json({ campaignId: req.params.campaignId, dailyStats: stats });
-  } catch (err) {
-    return res.status(500).json({ error: err.message });
-  }
+  } catch (err) { return res.status(500).json({ error: err.message }); }
 };
 
-module.exports = {
-  createCampaign, startCampaign, pauseCampaign,
-  sendNext,
-  getCampaign, getAllCampaigns, deleteCampaign,
-  testSmtp, getDailyStats,
-};
+module.exports = { createCampaign, startCampaign, pauseCampaign, sendNext, getCampaign, getAllCampaigns, deleteCampaign, testSmtp, getDailyStats };
